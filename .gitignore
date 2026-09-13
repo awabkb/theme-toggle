@@ -1,0 +1,8 @@
+[Bb]in/
+[Oo]bj/
+dist/
+src/*.exe
+*.user
+.vs/
+*.suo
+*.cache
