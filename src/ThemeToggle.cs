@@ -12,19 +12,35 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("awabkb")]
 [assembly: AssemblyProduct("Theme Toggle")]
 [assembly: AssemblyCopyright("Copyright 2026 awabkb")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 internal static class Native
 {
-    public const uint WM_SETTINGCHANGE = 0x001A;
+    public const int WM_SETTINGCHANGE = 0x001A;
+    public const int WM_HOTKEY = 0x0312;
     public const uint SMTO_ABORTIFHUNG = 0x0002;
+    public const uint MOD_SHIFT = 0x0004;
+    public const uint MOD_WIN = 0x0008;
+    public const uint MOD_NOREPEAT = 0x4000;
     public static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessageTimeout(
         IntPtr hWnd, uint Msg, IntPtr wParam, string lParam,
         uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll")]
+    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    [DllImport("user32.dll")]
+    public static extern bool DestroyIcon(IntPtr hIcon);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetProcessDPIAware();
 }
 
 internal static class Theme
@@ -54,7 +70,7 @@ internal static class Theme
         IntPtr result;
         Native.SendMessageTimeout(
             Native.HWND_BROADCAST,
-            Native.WM_SETTINGCHANGE,
+            (uint)Native.WM_SETTINGCHANGE,
             IntPtr.Zero,
             "ImmersiveColorSet",
             Native.SMTO_ABORTIFHUNG,
@@ -65,43 +81,117 @@ internal static class Theme
 
 internal static class Icons
 {
+    // Draws at the tray's real pixel size (16 at 100% scaling, 24 at 150%, 32 at 200%)
+    // so the icon stays sharp. Geometry is laid out on a 32-unit grid and scaled.
     public static Icon Create(bool darkMode)
     {
-        using (Bitmap bmp = new Bitmap(32, 32))
-        using (Graphics g = Graphics.FromImage(bmp))
+        int size = Math.Max(16, SystemInformation.SmallIconSize.Width);
+        float s = size / 32f;
+
+        using (Bitmap bmp = new Bitmap(size, size))
         {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Color.Transparent);
-
-            if (darkMode)
+            using (Graphics g = Graphics.FromImage(bmp))
             {
-                using (SolidBrush gold = new SolidBrush(Color.FromArgb(255, 220, 80)))
-                using (SolidBrush cut = new SolidBrush(Color.FromArgb(40, 40, 40)))
-                {
-                    g.FillEllipse(gold, 5, 5, 22, 22);
-                    g.FillEllipse(cut, 13, 1, 22, 22);
-                }
-            }
-            else
-            {
-                using (SolidBrush gold = new SolidBrush(Color.FromArgb(255, 200, 40)))
-                using (Pen ray = new Pen(Color.FromArgb(255, 170, 20), 2.4f))
-                {
-                    g.FillEllipse(gold, 9, 9, 14, 14);
-                    for (int i = 0; i < 8; i++)
-                    {
-                        double angle = i * 45.0 * Math.PI / 180.0;
-                        int x1 = 16 + (int)(Math.Cos(angle) * 14);
-                        int y1 = 16 + (int)(Math.Sin(angle) * 14);
-                        int x2 = 16 + (int)(Math.Cos(angle) * 10);
-                        int y2 = 16 + (int)(Math.Sin(angle) * 10);
-                        g.DrawLine(ray, x1, y1, x2, y2);
-                    }
-                }
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.Clear(Color.Transparent);
+                if (darkMode) DrawMoon(g, s);
+                else DrawSun(g, s);
             }
 
+            // GetHicon returns a handle that Icon.FromHandle does not own.
+            // Clone it into an icon that owns its data, then free the handle.
             IntPtr handle = bmp.GetHicon();
-            return Icon.FromHandle(handle);
+            try
+            {
+                using (Icon temp = Icon.FromHandle(handle))
+                {
+                    return (Icon)temp.Clone();
+                }
+            }
+            finally
+            {
+                Native.DestroyIcon(handle);
+            }
+        }
+    }
+
+    static void DrawMoon(Graphics g, float s)
+    {
+        // Crescent: a disc with an offset disc cut out, leaving real transparency
+        // so it looks right on any taskbar colour.
+        using (GraphicsPath disc = new GraphicsPath())
+        using (GraphicsPath bite = new GraphicsPath())
+        using (SolidBrush fill = new SolidBrush(Color.FromArgb(255, 225, 120)))
+        {
+            disc.AddEllipse(4 * s, 4 * s, 24 * s, 24 * s);
+            bite.AddEllipse(12 * s, 0 * s, 22 * s, 22 * s);
+            using (Region region = new Region(disc))
+            {
+                region.Exclude(bite);
+                g.FillRegion(fill, region);
+            }
+        }
+    }
+
+    static void DrawSun(Graphics g, float s)
+    {
+        using (SolidBrush gold = new SolidBrush(Color.FromArgb(240, 160, 0)))
+        using (Pen ray = new Pen(Color.FromArgb(230, 140, 0), Math.Max(1.5f, 2.6f * s)))
+        {
+            ray.StartCap = LineCap.Round;
+            ray.EndCap = LineCap.Round;
+            g.FillEllipse(gold, 9 * s, 9 * s, 14 * s, 14 * s);
+            for (int i = 0; i < 8; i++)
+            {
+                double angle = i * Math.PI / 4.0;
+                float cos = (float)Math.Cos(angle);
+                float sin = (float)Math.Sin(angle);
+                g.DrawLine(ray,
+                    (16 + cos * 10.5f) * s, (16 + sin * 10.5f) * s,
+                    (16 + cos * 14f) * s, (16 + sin * 14f) * s);
+            }
+        }
+    }
+}
+
+// Hidden top-level window: receives the global hotkey and the
+// WM_SETTINGCHANGE broadcast sent when the theme changes from anywhere.
+internal sealed class MessageWindow : NativeWindow, IDisposable
+{
+    const int HotkeyId = 1;
+    public event EventHandler HotkeyPressed;
+    public event EventHandler ThemeChanged;
+    public readonly bool HotkeyRegistered;
+
+    public MessageWindow()
+    {
+        CreateHandle(new CreateParams());
+        HotkeyRegistered = Native.RegisterHotKey(
+            Handle, HotkeyId,
+            Native.MOD_WIN | Native.MOD_SHIFT | Native.MOD_NOREPEAT,
+            (uint)Keys.D);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == Native.WM_HOTKEY && m.WParam.ToInt32() == HotkeyId)
+        {
+            if (HotkeyPressed != null) HotkeyPressed(this, EventArgs.Empty);
+        }
+        else if (m.Msg == Native.WM_SETTINGCHANGE && m.LParam != IntPtr.Zero
+            && Marshal.PtrToStringUni(m.LParam) == "ImmersiveColorSet")
+        {
+            if (ThemeChanged != null) ThemeChanged(this, EventArgs.Empty);
+        }
+        base.WndProc(ref m);
+    }
+
+    public void Dispose()
+    {
+        if (Handle != IntPtr.Zero)
+        {
+            if (HotkeyRegistered) Native.UnregisterHotKey(Handle, HotkeyId);
+            DestroyHandle();
         }
     }
 }
@@ -109,7 +199,9 @@ internal static class Icons
 internal sealed class TrayApp : ApplicationContext
 {
     const string SettingsPath = @"SOFTWARE\awabkb\ThemeToggle";
+    const string HotkeyText = "Win+Shift+D";
     readonly NotifyIcon tray;
+    readonly MessageWindow window;
     Icon currentIcon;
 
     public TrayApp()
@@ -118,8 +210,15 @@ internal sealed class TrayApp : ApplicationContext
         tray.Visible = true;
         RefreshIcon();
 
+        window = new MessageWindow();
+        window.HotkeyPressed += delegate { Toggle(); };
+        window.ThemeChanged += delegate { RefreshIcon(); };
+
         ContextMenuStrip menu = new ContextMenuStrip();
-        menu.Items.Add("Toggle dark / light mode", null, delegate { Toggle(); });
+        ToolStripMenuItem toggleItem = new ToolStripMenuItem(
+            "Toggle dark / light mode", null, delegate { Toggle(); });
+        if (window.HotkeyRegistered) toggleItem.ShortcutKeyDisplayString = HotkeyText;
+        menu.Items.Add(toggleItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, delegate { Exit(); });
         tray.ContextMenuStrip = menu;
@@ -132,10 +231,16 @@ internal sealed class TrayApp : ApplicationContext
             }
         };
 
-        if (ShouldShowTip())
+        if (!window.HotkeyRegistered)
         {
             tray.BalloonTipTitle = "Theme Toggle";
-            tray.BalloonTipText = "Click this sun/moon icon to switch dark and light mode.";
+            tray.BalloonTipText = HotkeyText + " is already used by another app, so the shortcut is off. Clicking the icon still works.";
+            tray.ShowBalloonTip(5000);
+        }
+        else if (ShouldShowTip())
+        {
+            tray.BalloonTipTitle = "Theme Toggle";
+            tray.BalloonTipText = "Click this icon or press " + HotkeyText + " to switch dark and light mode.";
             tray.ShowBalloonTip(4000);
         }
     }
@@ -175,6 +280,7 @@ internal sealed class TrayApp : ApplicationContext
 
     void Exit()
     {
+        window.Dispose();
         tray.Visible = false;
         tray.Dispose();
         if (currentIcon != null) currentIcon.Dispose();
@@ -195,6 +301,9 @@ internal static class Program
                 return;
             }
 
+            // Without this, Windows reports 16px icons at every scale and
+            // stretches them, which is what made the old icon blurry.
+            Native.SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new TrayApp());
