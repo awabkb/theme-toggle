@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.1.0"
+    [string]$Version = "1.2.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,7 +17,7 @@ if (-not (Test-Path $icon)) {
 }
 
 $exe = Join-Path $root "src\ThemeToggle.exe"
-& $csc /nologo /target:winexe /optimize+ /win32icon:$icon /out:$exe "$root\src\ThemeToggle.cs"
+& $csc /nologo /target:winexe /optimize+ /win32icon:$icon /r:System.Device.dll /out:$exe "$root\src\ThemeToggle.cs"
 if ($LASTEXITCODE -ne 0) { throw "App compile failed." }
 Write-Host "Built $exe"
 
